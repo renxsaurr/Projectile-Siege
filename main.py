@@ -1,20 +1,3 @@
-"""
-PROJECTILE SIEGE
-================
-A projectile-motion tower-defense game made for Physics 1.
-
-Every cannon shell, catapult stone and airship bomb in this game moves
-according to the kinematic equations of projectile motion (no air drag):
-
-    x(t) = x0 + v0x * t               where  v0x = v0 * cos(theta)
-    y(t) = y0 + v0y * t - 1/2 g t^2   where  v0y = v0 * sin(theta)
-
-The horizontal velocity never changes; only gravity (g = 9.81 m/s^2)
-changes the vertical velocity:  vy(t) = v0y - g t
-
-Defend the tower on the left. If the enemies destroy it, the game is over.
-"""
-
 import array
 import math
 import os
