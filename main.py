@@ -1,9 +1,18 @@
+"""
+PROJECTILE SIEGE - a Physics 1 projectile-motion defense game (Python + Pygame)
+
+Defend the tower by firing a cannon: the player chooses the launch angle θ and
+launch speed v₀. Every shell, stone and bomb moves by the equations of free fall
+and projectile motion, which are all written in physics.py and called from here.
+"""
 import array
 import math
 import os
 import random
 
 import pygame
+
+import physics
 
 pygame.mixer.pre_init(22050, -16, 1, 512)
 pygame.init()
@@ -19,7 +28,7 @@ FPS = 60
 # ---------------------------------------------------------------------------
 # PHYSICS AND WORLD SCALE (all physics is done in meters and seconds)
 # ---------------------------------------------------------------------------
-G = 9.81                    # gravitational acceleration (m/s^2)
+G = physics.G               # gravitational acceleration (m/s^2)
 PPM = 20                    # pixels per meter
 GROUND_Y = 630              # screen y of the ground (y = 0 m)
 ORIGIN_X = 120              # screen x of the tower's center (x = 0 m)
@@ -50,10 +59,12 @@ def to_screen(x, y):
 
 
 def to_world(sx, sy):
+    """Convert screen pixels back to world meters (inverse of to_screen)."""
     return (sx - ORIGIN_X) / PPM, (GROUND_Y - sy) / PPM
 
 
 def dist_to_box(px, py, box):
+    """Shortest distance from point (px, py) to a rectangle; 0 if the point is inside. Used for hit detection."""
     x1, y1, x2, y2 = box
     dx = max(x1 - px, 0.0, px - x2)
     dy = max(y1 - py, 0.0, py - y2)
@@ -61,14 +72,17 @@ def dist_to_box(px, py, box):
 
 
 def lerp(a, b, t):
+    """Linear interpolation between a and b (t = 0 gives a, t = 1 gives b)."""
     return a + (b - a) * t
 
 
 def lerp_color(c1, c2, t):
+    """Blend two RGB colors."""
     return tuple(int(lerp(a, b, t)) for a, b in zip(c1, c2))
 
 
 def gradient(stops, t):
+    """Pick a color from a list of (position, color) stops."""
     for (t1, c1), (t2, c2) in zip(stops, stops[1:]):
         if t <= t2:
             return lerp_color(c1, c2, (t - t1) / (t2 - t1))
@@ -90,6 +104,7 @@ F_TITLE = pygame.font.SysFont("impact,arialblack", 104)
 
 
 def draw_text(surf, text, fnt, color, pos, anchor="topleft", shadow=True, alpha=255):
+    """Draw text with an optional drop shadow, anchored at pos."""
     img = fnt.render(text, True, color)
     rect = img.get_rect(**{anchor: (int(pos[0]), int(pos[1]))})
     if shadow:
@@ -144,6 +159,7 @@ def soft_sprite(radius, color):
 
 
 def add_glow(surf, x, y, radius, color, level=1.0):
+    """Additively blend a glow onto the surface (explosions, lights)."""
     if level <= 0.03:
         return
     spr = glow_sprite(radius, color, level)
@@ -152,6 +168,7 @@ def add_glow(surf, x, y, radius, color, level=1.0):
 
 
 def add_soft(surf, x, y, radius, color, alpha):
+    """Draw a soft transparent blob (smoke, fire particles)."""
     if alpha <= 3:
         return
     spr = soft_sprite(radius, color)
@@ -161,6 +178,7 @@ def add_soft(surf, x, y, radius, color, alpha):
 
 
 def panel(w, h, alpha=175):
+    """Rounded, semi-transparent dark box used behind every HUD panel."""
     key = (w, h, alpha)
     s = _panel_cache.get(key)
     if s is None:
@@ -172,6 +190,7 @@ def panel(w, h, alpha=175):
 
 
 def dashed_line(surf, color, a, b, dash=6, gap=5, width=1):
+    """Draw a dashed line from a to b (used for guides and vector components)."""
     x1, y1 = a
     x2, y2 = b
     length = math.hypot(x2 - x1, y2 - y1)
@@ -186,6 +205,7 @@ def dashed_line(surf, color, a, b, dash=6, gap=5, width=1):
 
 
 def arrow(surf, color, a, b, width=3, head=9):
+    """Draw an arrow from a to b (used for the velocity vectors)."""
     length = math.hypot(b[0] - a[0], b[1] - a[1])
     if length < 2:
         return
@@ -199,6 +219,7 @@ def arrow(surf, color, a, b, width=3, head=9):
 
 
 def make_vignette(color, strength):
+    """Darken the screen edges; a red version pulses when the tower is low on HP."""
     small = pygame.Surface((64, 36), pygame.SRCALPHA)
     for y in range(36):
         for x in range(64):
@@ -218,7 +239,9 @@ pygame.draw.circle(DOT, (255, 255, 255, 255), (3, 3), 2)
 
 
 class Sounds:
+    """All sound effects, synthesised from math at start-up (no audio files needed)."""
     def __init__(self):
+        """Build every sound effect into the sound bank."""
         self.ok = False
         self.muted = False
         self.bank = {}
@@ -234,6 +257,7 @@ class Sounds:
         R = self.rate
 
         def render(duration, fn, vol=0.9):
+            """Sample fn(t) for `duration` seconds into a pygame Sound."""
             buf = array.array("h")
             st = {}
             for i in range(int(R * duration)):
@@ -245,34 +269,40 @@ class Sounds:
             return pygame.mixer.Sound(buffer=buf.tobytes())
 
         def noise_lp(st, a, key="lp"):
+            """Low-pass filtered white noise (rumbles, explosions)."""
             lp = st.get(key, 0.0)
             lp += (rng.uniform(-1, 1) - lp) * a
             st[key] = lp
             return lp
 
         def osc(st, freq, key="ph"):
+            """Sine-wave oscillator that keeps its phase between samples."""
             ph = st.get(key, 0.0) + math.tau * freq / R
             st[key] = ph
             return math.sin(ph)
 
         def boom(t, st):
+            """Explosion: noisy blast plus a falling low thump."""
             n = noise_lp(st, 0.02 + 0.3 * math.exp(-t * 6))
             thump = osc(st, 35 + 90 * math.exp(-t * 8))
             env = math.exp(-t * 3.2) * min(1.0, t * 400)
             return (n * 3.2 + thump * 0.8) * env
 
         def fire(t, st):
+            """Cannon shot: sharp crack, thump and rumble."""
             crack = noise_lp(st, 0.6) * math.exp(-t * 28)
             thump = osc(st, 45 + 110 * math.exp(-t * 14)) * math.exp(-t * 9)
             rumble = noise_lp(st, 0.05, "lp2") * 2.5 * math.exp(-t * 7)
             return (crack * 0.9 + thump + rumble) * min(1.0, t * 800)
 
         def hit(t, st):
+            """Short thud when the tower gets hit."""
             thump = osc(st, 40 + 70 * math.exp(-t * 20)) * math.exp(-t * 14)
             n = noise_lp(st, 0.25) * math.exp(-t * 22)
             return thump + n * 0.8
 
         def horn(t, st):
+            """Two-note war horn at the start of a wave."""
             f = 196 if t < 0.42 else 294
             f *= 1 + 0.006 * math.sin(t * 34)
             ph = st.get("ph", 0.0) + math.tau * f / R
@@ -282,6 +312,7 @@ class Sounds:
             return v * 0.5 * env
 
         def clear(t, st):
+            """Rising arpeggio when a wave is cleared."""
             notes = [523, 659, 784, 1046]
             idx = min(3, int(t / 0.11))
             local = t - idx * 0.11
@@ -289,6 +320,7 @@ class Sounds:
             return v * math.exp(-local * (6 if idx < 3 else 3)) * 0.6
 
         def gameover(t, st):
+            """Sinking tone with a rumble when the tower falls."""
             f = 220 * math.exp(-t * 0.7)
             ph = st.get("ph", 0.0) + math.tau * f / R
             st["ph"] = ph
@@ -298,14 +330,17 @@ class Sounds:
             return (v * trem + rumble) * min(1.0, t * 30) * min(1.0, (2.6 - t) * 2)
 
         def intercept(t, st):
+            """High 'ping' when a shell destroys an enemy projectile mid-air."""
             v = osc(st, 1500 * math.exp(-t * 2.5)) + 0.5 * osc(st, 2250 * math.exp(-t * 2.5), "p2")
             return v * math.exp(-t * 9) * 0.6
 
         def drop(t, st):
+            """Whoosh for the wall drop."""
             a = 0.02 + 0.25 * (t / 0.6)
             return noise_lp(st, a) * 2.2 * math.sin(math.pi * min(1.0, t / 0.6))
 
         def click(t, st):
+            """UI click."""
             return osc(st, 880) * math.exp(-t * 60) * 0.6
 
         self.bank = {
@@ -322,6 +357,7 @@ class Sounds:
         self.ok = True
 
     def play(self, name, vol=1.0):
+        """Play a sound by name (does nothing if muted or audio is unavailable)."""
         if not self.ok or self.muted:
             return
         snd = self.bank.get(name)
@@ -337,6 +373,7 @@ class Sounds:
 
 
 def build_background():
+    """Pre-render the static scene: sky, sun, mountains, ground and distance ruler."""
     bg = pygame.Surface((WIDTH, HEIGHT))
     sky = [(0.0, (14, 18, 48)), (0.35, (58, 52, 110)), (0.62, (165, 88, 122)),
            (0.84, (242, 142, 96)), (1.0, (255, 196, 122))]
@@ -359,6 +396,7 @@ def build_background():
     pygame.draw.circle(bg, (255, 238, 196), sun, 48)
 
     def ridge(base, amp, color, seed, rough, step):
+        """Draw one layer of mountains from a sum of sine waves."""
         r = random.Random(seed)
         p = [r.uniform(0, math.tau) for _ in range(3)]
         pts = [(0, GROUND_Y)]
@@ -407,6 +445,7 @@ def build_background():
 
 
 def make_clouds():
+    """Create the drifting cloud sprites."""
     clouds = []
     rng = random.Random(9)
     for _ in range(7):
@@ -424,12 +463,14 @@ def make_clouds():
 
 
 def build_tower_sprite():
+    """Draw the player's stone tower (plus a white copy used for the hit flash)."""
     w, h = 76, 234
     s = pygame.Surface((w, h), pygame.SRCALPHA)
     rng = random.Random(3)
     body = pygame.Rect(6, 14, 64, 220)
 
     def bricks(area, row_h=12, brick_w=16):
+        """Fill an area with a staggered brick pattern."""
         for row, y in enumerate(range(area.top, area.bottom, row_h)):
             off = 0 if row % 2 == 0 else brick_w // 2
             for bx in range(area.left - off, area.right, brick_w):
@@ -467,6 +508,7 @@ def build_tower_sprite():
 
 
 def gen_cracks():
+    """Random crack lines that appear on the tower as it loses HP."""
     rng = random.Random()
     cracks = []
     for _ in range(9):
@@ -487,6 +529,7 @@ FIRE_COLORS = [(255, 250, 220), (255, 222, 120), (255, 170, 60), (240, 110, 30),
 
 
 class Particle:
+    """One visual particle (fire, smoke, spark, debris). Purely cosmetic, in pixels."""
     __slots__ = ("x", "y", "vx", "vy", "life", "max_life", "size", "size_end", "color",
                  "kind", "grav", "drag", "rot", "spin", "floor")
 
@@ -503,6 +546,7 @@ class Particle:
 
 
 class FloatText:
+    """Floating text that rises and fades (score pop-ups, damage numbers)."""
     def __init__(self, text, x, y, color, fnt=F_POP, life=1.2, vy=-45):
         self.text, self.x, self.y, self.color, self.fnt = text, x, y, color, fnt
         self.life = self.max_life = life
@@ -510,6 +554,7 @@ class FloatText:
 
 
 class Banner:
+    """Big centered title such as 'WAVE 3' or 'WAVE CLEARED'."""
     def __init__(self, title, subtitle, duration, color=(255, 214, 110)):
         self.title, self.subtitle, self.color = title, subtitle, color
         self.t, self.duration = 0.0, duration
@@ -519,11 +564,10 @@ class Shell:
     """A projectile whose position is always computed from the exact kinematic equations."""
 
     def __init__(self, x0, y0, v0, angle_deg, kind="shell"):
-        th = math.radians(angle_deg)
+        """Store the launch point and split v₀ into its components (physics.velocity_components)."""
         self.x0, self.y0 = x0, y0
         self.v0, self.angle = v0, angle_deg
-        self.vx = v0 * math.cos(th)
-        self.vy0 = v0 * math.sin(th)
+        self.vx, self.vy0 = physics.velocity_components(v0, angle_deg)
         self.t = 0.0
         self.x, self.y = x0, y0
         self.kind = kind
@@ -531,22 +575,25 @@ class Shell:
         self.trail_timer = 0.0
 
     def pos(self, t):
-        return self.x0 + self.vx * t, self.y0 + self.vy0 * t - 0.5 * G * t * t
+        """Position t seconds after launch (physics.position)."""
+        return physics.position(self.x0, self.y0, self.vx, self.vy0, t)
 
     def vy(self):
-        return self.vy0 - G * self.t
+        """Vertical velocity right now (physics.vertical_velocity)."""
+        return physics.vertical_velocity(self.vy0, self.t)
 
     def ground_time(self):
-        """Solve y0 + vy0 t - 1/2 g t^2 = 0 for the positive root."""
-        return (self.vy0 + math.sqrt(self.vy0 ** 2 + 2 * G * self.y0)) / G
+        """Time until this projectile hits the ground (physics.time_of_flight)."""
+        return physics.time_of_flight(self.y0, self.vy0)
 
 
 class Missile(Shell):
     """Enemy projectiles (catapult stones and airship bombs) use the same physics."""
 
     def __init__(self, x0, y0, vx, vy, kind, damage):
-        v0 = math.hypot(vx, vy)
-        super().__init__(x0, y0, v0, math.degrees(math.atan2(vy, vx)), kind)
+        """Build a missile from its velocity components (vx, vy) instead of (v0, angle)."""
+        v0, angle = physics.speed_and_angle(vx, vy)
+        super().__init__(x0, y0, v0, angle, kind)
         self.vx, self.vy0 = vx, vy
         self.damage = damage
         self.spin = random.uniform(-8, 8)
@@ -572,7 +619,9 @@ PALETTES = {
 
 
 class Enemy:
+    """One attacker. Ground troops walk toward the tower; airships (bombers) fly overhead."""
     def __init__(self, kind, wave):
+        """Set up an enemy of the given kind; stats get tougher as the wave number rises."""
         st = ENEMY_STATS[kind]
         self.kind = kind
         self.max_hp = st["hp"] + (6 * (wave // 5 - 1) if kind == "ram" and wave >= 5 else 0)
@@ -605,12 +654,14 @@ class Enemy:
             self.stop_x = TOWER_HALF_W + self.w / 2 + 1.5
 
     def box(self):
+        """Hit box (x1, y1, x2, y2) in meters."""
         if self.kind == "bomber":
             return (self.x - self.w / 2, self.y - self.h / 2, self.x + self.w / 2, self.y + self.h / 2)
         return (self.x - self.w / 2, 0.0, self.x + self.w / 2, self.h)
 
 
 def build_wave(n):
+    """Return the list of enemy kinds to spawn in wave n (new enemy types unlock over time)."""
     kinds = ["soldier"] * (3 + 2 * n)
     if n >= 2:
         kinds += ["runner"] * (n + 1)
@@ -640,7 +691,9 @@ WAVE_TIPS = {
 
 
 class Game:
+    """The whole game: state, physics updates, input and drawing."""
     def __init__(self):
+        """Load assets once and start at the main menu."""
         self.sounds = Sounds()
         self.bg = build_background()
         self.clouds = make_clouds()
@@ -662,6 +715,7 @@ class Game:
 
     # ------------------------------------------------------------ state ---
     def reset(self, to_menu=False):
+        """Start a fresh game (or return to the menu) with everything reset."""
         self.state = "menu" if to_menu else "play"
         self.ground = self.bg.copy()
         self.enemies, self.shells, self.missiles = [], [], []
@@ -696,6 +750,7 @@ class Game:
         self.demo_timer, self.demo_spawn, self.demo_plan = 1.5, 0.5, None
 
     def load_highscore(self):
+        """Read the best score from highscore.txt (0 if missing)."""
         try:
             with open(HIGHSCORE_FILE) as f:
                 return int(f.read().strip() or 0)
@@ -703,6 +758,7 @@ class Game:
             return 0
 
     def save_highscore(self):
+        """Write the best score to highscore.txt."""
         try:
             with open(HIGHSCORE_FILE, "w") as f:
                 f.write(str(self.highscore))
@@ -711,6 +767,7 @@ class Game:
 
     # ------------------------------------------------------------- loop ---
     def run(self):
+        """Main loop: read input, update the world, draw, repeat at 60 FPS."""
         while True:
             dt = min(clock.tick(FPS) / 1000.0, 0.05)
             for event in pygame.event.get():
@@ -721,11 +778,13 @@ class Game:
             pygame.display.flip()
 
     def handle_event(self, event):
+        """Keyboard and mouse controls. Returns False when the game should quit."""
         if event.type == pygame.QUIT:
             return False
         if event.type == pygame.KEYDOWN:
             k = event.key
             shift = event.mod & pygame.KMOD_SHIFT
+            # keys that work on every screen
             if k == pygame.K_F11:
                 pygame.display.toggle_fullscreen()
             elif k == pygame.K_m:
@@ -738,6 +797,7 @@ class Game:
             elif k == pygame.K_h:
                 self.show_panel = not self.show_panel
 
+            # keys for the current screen
             if self.state == "menu":
                 if k in (pygame.K_RETURN, pygame.K_SPACE, pygame.K_KP_ENTER):
                     self.reset()
@@ -769,11 +829,14 @@ class Game:
                 elif k == pygame.K_ESCAPE:
                     self.reset(to_menu=True)
 
+        # mouse: aim with the pointer (θ = angle from the cannon pivot to the mouse),
+        # wheel changes v₀, left click fires, right click drops a stone
         elif event.type == pygame.MOUSEMOTION and self.state == "play":
             px, py = to_screen(*PIVOT)
             mx, my = event.pos
             if math.hypot(mx - px, my - py) > 25:
-                self.set_angle(round(math.degrees(math.atan2(py - my, mx - px)) * 2) / 2)
+                _, aim = physics.speed_and_angle(mx - px, py - my)
+                self.set_angle(round(aim * 2) / 2)
         elif event.type == pygame.MOUSEWHEEL and self.state == "play":
             self.set_speed(self.v0 + event.y * 0.5)
         elif event.type == pygame.MOUSEBUTTONDOWN:
@@ -789,16 +852,21 @@ class Game:
         return True
 
     def set_angle(self, a):
+        """Set the launch angle θ, clamped to the cannon's limits."""
         self.angle = max(MIN_ANGLE, min(MAX_ANGLE, a))
 
     def set_speed(self, v):
+        """Set the launch speed v₀, clamped to the cannon's limits."""
         self.v0 = round(max(MIN_V, min(MAX_V, v)), 2)
 
     # ------------------------------------------------------------ update ---
     def update(self, real_dt):
+        """Advance the whole game by one frame (real_dt seconds)."""
         self.t_real += real_dt
         if self.state == "pause":
             return
+
+        # slow motion after a big multi-kill (and during the tower collapse)
 
         if self.slowmo > 0:
             self.slowmo -= real_dt
@@ -845,6 +913,7 @@ class Game:
                 self.banner = None
 
     def update_input(self, dt):
+        """Holding a key changes the angle/speed smoothly (Shift = fine adjustment)."""
         keys = pygame.key.get_pressed()
         fine = keys[pygame.K_LSHIFT] or keys[pygame.K_RSHIFT]
         groups = {
@@ -862,6 +931,7 @@ class Game:
                 self.hold[name] = 0.0
 
     def update_waves(self, dt):
+        """Spawn the enemies of the current wave and handle 'wave cleared'."""
         if self.next_wave_timer is not None:
             self.next_wave_timer -= dt
             if self.next_wave_timer <= 0:
@@ -891,6 +961,7 @@ class Game:
             self.next_wave_timer = 4.5
 
     def start_wave(self, n):
+        """Begin wave n and show its banner/tip."""
         self.wave = n
         self.wave_active = True
         self.spawn_queue = build_wave(n)
@@ -901,7 +972,8 @@ class Game:
         self.sounds.play("horn")
 
     def update_demo(self, dt):
-        """Menu background: the cannon aims itself by solving the projectile equations."""
+        """Menu background: the cannon aims itself using physics.launch_speed_to_hit,
+        then uses the flight time Δx / v₀x to aim ahead of a walking enemy."""
         self.demo_spawn -= dt
         if self.demo_spawn <= 0 and len(self.enemies) < 6:
             self.enemies.append(Enemy(random.choice(["soldier", "soldier", "runner", "brute", "catapult"]), 3))
@@ -911,20 +983,20 @@ class Game:
         targets = [e for e in self.enemies if e.kind != "bomber" and 6 < e.x < FIELD_END - 3]
         if self.demo_plan is None and self.demo_timer <= 0 and targets:
             e = min(targets, key=lambda en: en.x)
-            th = math.radians(random.choice([25, 35, 45, 55, 65]))
-            mx, my = PIVOT[0] + BARREL_LEN * math.cos(th), PIVOT[1] + BARREL_LEN * math.sin(th)
+            angle = random.choice([25, 35, 45, 55, 65])
+            mx, my = physics.launch_point(*PIVOT, BARREL_LEN, angle)
             tx = e.x
             v = None
             for _ in range(3):   # lead the target by its travel during the flight
                 dx = tx - mx
-                denom = 2 * math.cos(th) ** 2 * (dx * math.tan(th) + my)
-                if dx <= 0 or denom <= 0:
+                v = physics.launch_speed_to_hit(dx, -my, angle)   # target is on the ground, my below
+                if v is None:
                     break
-                v = math.sqrt(G * dx * dx / denom)
-                flight = dx / (v * math.cos(th))
-                tx = e.x - (e.speed * flight if e.state == "walk" else 0)
+                vx, _ = physics.velocity_components(v, angle)
+                flight = physics.time_to_travel(dx, vx)
+                tx = physics.uniform_position(e.x, -e.speed, flight) if e.state == "walk" else e.x
             if v and MIN_V <= v <= MAX_V:
-                self.demo_plan = (math.degrees(th), v)
+                self.demo_plan = (angle, v)
         if self.demo_plan:
             ang, v = self.demo_plan
             self.angle += (ang - self.angle) * min(1.0, dt * 5)
@@ -937,19 +1009,21 @@ class Game:
 
     # ------------------------------------------------------------ cannon ---
     def muzzle(self):
-        th = math.radians(self.angle)
-        return PIVOT[0] + BARREL_LEN * math.cos(th), PIVOT[1] + BARREL_LEN * math.sin(th)
+        """Launch point (x₀, h₀) = end of the barrel (physics.launch_point)."""
+        return physics.launch_point(*PIVOT, BARREL_LEN, self.angle)
 
     def predict(self):
+        """Predict the current shot before firing: components, time of flight T,
+        max height H and range R (shown in the HUD and the trajectory preview)."""
         mx, my = self.muzzle()
-        th = math.radians(self.angle)
-        vx, vy = self.v0 * math.cos(th), self.v0 * math.sin(th)
-        T = (vy + math.sqrt(vy * vy + 2 * G * my)) / G
-        H = my + (vy * vy / (2 * G) if vy > 0 else 0.0)
-        R = mx + vx * T
+        vx, vy = physics.velocity_components(self.v0, self.angle)
+        T = physics.time_of_flight(my, vy)
+        H = physics.max_height(my, vy)
+        R = physics.horizontal_range(mx, vx, T)
         return mx, my, vx, vy, T, H, R
 
     def fire(self, force=False):
+        """Fire a cannon shell with the current θ and v₀ (plus muzzle flash and smoke)."""
         if self.reload > 0 or (self.state != "play" and not force):
             return
         mx, my = self.muzzle()
@@ -979,20 +1053,28 @@ class Game:
                                            "smoke", grav=-25, drag=1.8, size_end=random.uniform(18, 28)))
 
     def drop_stone(self):
-        """Emergency weapon: drop a stone off the wall (a horizontal launch from rest height h)."""
+        """Emergency weapon: drop a stone off the wall. Vertically it is FREE FALL from rest
+        (physics.free_fall_time); the small horizontal push does not change the fall time,
+        because horizontal and vertical motion are independent."""
         if self.drop_cd > 0 or self.state != "play":
             return
         x0, y0 = TOWER_HALF_W + 0.3, TOWER_H + 0.3
         self.shells.append(Shell(x0, y0, DROP_SPEED, 0.0, kind="rock"))
         self.drop_cd = DROP_COOLDOWN
         self.sounds.play("drop", 0.6)
-        t_fall = math.sqrt(2 * y0 / G)
+        t_fall = physics.free_fall_time(y0)
         sx, sy = to_screen(x0, y0)
         self.texts.append(FloatText(f"free fall: t = √(2h/g) = {t_fall:.2f} s", sx + 20, sy - 20,
                                     (200, 230, 255), F_MONO_B, 2.2, -12))
 
     # ------------------------------------------------------------- shells ---
     def update_shells(self, dt):
+        """Move the player's shells and rocks, then check what they hit.
+
+        The position is not integrated step by step; it is taken straight from the exact
+        equations x(t), y(t) in physics.position, so there is no numerical error. The frame is split
+        into 4 sub-steps only to catch collisions with small or fast targets.
+        """
         steps = 4
         h = dt / steps
         for s in self.shells:
@@ -1001,6 +1083,7 @@ class Game:
                     break
                 s.t += h
                 s.x, s.y = s.pos(s.t)
+                # hit the ground: snap to the exact landing point at t = T
                 if s.y <= 0:
                     tg = s.ground_time()
                     s.t = tg
@@ -1011,6 +1094,7 @@ class Game:
                 if s.t > 0.1 and s.x < TOWER_HALF_W and s.y < TOWER_H + 0.5:
                     self.shell_impact(s, None)   # landed on our own battlements
                     break
+                # direct hit on an enemy
                 hit = None
                 for e in self.enemies:
                     if not e.dead and dist_to_box(s.x, s.y, e.box()) < 0.25:
@@ -1019,6 +1103,7 @@ class Game:
                 if hit:
                     self.shell_impact(s, hit)
                     break
+                # mid-air interception of an enemy stone or bomb
                 for m in self.missiles:
                     if m.alive and math.hypot(m.x - s.x, m.y - s.y) < 0.8:
                         m.alive = False
@@ -1043,6 +1128,7 @@ class Game:
         self.shells = [s for s in self.shells if s.alive]
 
     def shell_impact(self, s, direct, intercepted=False):
+        """A shell or rock has landed/hit something: explode and count the hit."""
         s.alive = False
         if s.kind == "shell" and self.state in ("play", "collapse", "over", "menu"):
             self.record_shot(s)
@@ -1053,8 +1139,9 @@ class Game:
             self.hits += 1
 
     def record_shot(self, s):
+        """Remember the finished shot so its path, max height H and range R stay on screen."""
         T = s.t
-        apex_t = max(0.0, min(T, s.vy0 / G))
+        apex_t = min(T, physics.time_to_apex(s.vy0))
         ax, ay = s.pos(apex_t)
         pts = [to_screen(*s.pos(T * i / 60)) for i in range(61)]
         self.last_shot = dict(pts=pts, apex=(ax, ay), land=(s.x, s.y), T=T, v0=s.v0, angle=s.angle,
@@ -1066,6 +1153,7 @@ class Game:
 
     # ----------------------------------------------------------- missiles ---
     def update_missiles(self, dt):
+        """Move enemy stones and bombs with the same exact equations, and check tower/ground hits."""
         steps = 3
         h = dt / steps
         for m in self.missiles:
@@ -1100,18 +1188,22 @@ class Game:
 
     # ----------------------------------------------------------- enemies ---
     def update_enemies(self, dt):
+        """Move enemies, make them attack the tower, and let airships drop bombs."""
         cheering = self.state in ("collapse", "over")
         for e in self.enemies:
             e.flash = max(0.0, e.flash - dt)
             e.strike_anim = max(0.0, e.strike_anim - dt)
             e.arm_phase += dt
             if e.kind == "bomber":
-                e.x -= e.speed * dt
+                e.x = physics.uniform_position(e.x, -e.speed, dt)
                 e.anim += dt * 3
                 e.y = e.base_y + math.sin(e.anim) * 0.3
+                # Airship bombing run: a released bomb falls freely for t = √(2Δh/g) while keeping
+                # the airship's horizontal velocity, so it moves speed·t sideways during the fall.
+                # Release when that landing point x − speed·t reaches the tower.
                 if e.has_bomb and not cheering and self.state != "menu":
                     drop_h = e.y - 0.8 - (TOWER_H + 0.7)
-                    if drop_h > 0 and e.x - e.speed * math.sqrt(2 * drop_h / G) <= 0.3:
+                    if drop_h > 0 and physics.uniform_position(e.x, -e.speed, physics.free_fall_time(drop_h)) <= 0.3:
                         e.has_bomb = False
                         self.missiles.append(Missile(e.x, e.y - 0.8, -e.speed, 0.0, "bomb", e.strike))
                 if e.x < -10:
@@ -1121,7 +1213,7 @@ class Game:
                 e.state = "cheer"
                 continue
             if e.state == "walk":
-                e.x -= e.speed * dt
+                e.x = physics.uniform_position(e.x, -e.speed, dt)
                 e.anim += dt * e.speed * 5.5
                 if e.x <= e.stop_x:
                     e.x = e.stop_x
@@ -1143,22 +1235,24 @@ class Game:
         self.enemies = [e for e in self.enemies if not e.dead and not e.gone]
 
     def catapult_fire(self, e):
-        """The catapult solves the projectile equation to hit the tower wall."""
-        th = math.radians(52)
+        """The catapult fires at a fixed 52° and uses physics.launch_speed_to_hit to find the
+        speed that reaches the tower wall. A ±1.5% random error keeps it from being perfect."""
+        angle = 52
         x0, y0 = e.x - 0.9, 3.3
         tx, ty = TOWER_HALF_W - 0.2, random.uniform(3.0, 9.0)
-        dx, dy = x0 - tx, ty - y0
-        denom = 2 * math.cos(th) ** 2 * (dx * math.tan(th) - dy)
-        if denom <= 0:
+        v = physics.launch_speed_to_hit(x0 - tx, ty - y0, angle)
+        if v is None:
             return
-        v = math.sqrt(G * dx * dx / denom) * random.uniform(0.985, 1.015)
+        v *= random.uniform(0.985, 1.015)
         if self.state == "menu":
             v *= 0.8   # the demo catapults never hit
-        self.missiles.append(Missile(x0, y0, -v * math.cos(th), v * math.sin(th), "stone", e.strike))
+        vx, vy = physics.velocity_components(v, angle)
+        self.missiles.append(Missile(x0, y0, -vx, vy, "stone", e.strike))   # fired toward the left
         sx, sy = to_screen(x0, y0)
         self.dust_burst(sx, sy, 6, (170, 150, 120))
 
     def damage_tower(self, amount, x, y, heavy=False):
+        """Subtract HP from the tower; destroy it at 0 HP."""
         if not self.tower_alive or self.state != "play":
             return
         self.tower_hp -= amount
@@ -1177,6 +1271,7 @@ class Game:
             self.destroy_tower()
 
     def kill_enemy(self, e, bx, by):
+        """Remove a dead enemy with a burst of debris."""
         e.dead = True
         sx, sy = to_screen(e.x, e.y + (0 if e.kind == "bomber" else e.h * 0.5))
         big = e.kind in ("catapult", "ram", "bomber")
@@ -1239,6 +1334,7 @@ class Game:
         return hurt
 
     def explosion_fx(self, sx, sy, scale=1.0, ground=False):
+        """Visual explosion: flash, shock ring, fire, sparks, smoke (and a crater on the ground)."""
         P = self.particles
         P.append(Particle(sx, sy, 0, 0, 0.28, 110 * scale, (255, 214, 150), "flash"))
         P.append(Particle(sx, sy, 0, 0, 0.45, 8, (255, 236, 210), "ring", size_end=80 * scale))
@@ -1274,6 +1370,7 @@ class Game:
             self.ground.set_clip(None)
 
     def dust_burst(self, sx, sy, n, color):
+        """Small puff of dust."""
         for _ in range(n):
             self.particles.append(Particle(sx, sy, random.uniform(-110, 110), random.uniform(-70, -5),
                                            random.uniform(0.7, 1.5), 5, color, "smoke", grav=-10, drag=2.5,
@@ -1281,6 +1378,7 @@ class Game:
 
     # ------------------------------------------------------ tower & fx ----
     def update_tower_fx(self, dt):
+        """Smoke and fire rise from the tower once it is badly damaged."""
         if not self.tower_alive:
             return
         frac = self.tower_hp / TOWER_MAX_HP
@@ -1302,6 +1400,7 @@ class Game:
                                            random.choice(FIRE_COLORS[1:4]), "fire", grav=-40, size_end=1))
 
     def destroy_tower(self):
+        """Tower HP hit 0: start the collapse and save a new high score."""
         self.tower_alive = False
         self.state = "collapse"
         self.collapse_t = 0.0
@@ -1335,6 +1434,7 @@ class Game:
         self.shells.clear()
 
     def update_collapse(self, dt):
+        """Collapse animation: zoom in, chain explosions, then show the game-over screen."""
         self.collapse_t += dt
         self.zoom += (1.35 - self.zoom) * min(1.0, dt * 3)
         while self.collapse_events and self.collapse_events[0][0] <= self.collapse_t:
@@ -1349,6 +1449,8 @@ class Game:
             self.over_t = 0.0
 
     def update_particles(self, dt):
+        """Move the cosmetic particles (simple step-by-step gravity and drag, in pixels).
+        These are visual effects only; the real projectiles use the exact equations."""
         for p in self.particles:
             p.life -= dt
             if p.drag:
@@ -1370,7 +1472,9 @@ class Game:
 
     # -------------------------------------------------------------- draw ---
     def draw(self):
+        """Draw one frame: world first, then camera shake/zoom, then the screen overlays."""
         c = self.canvas
+        # world layer: background, clouds, trajectories, tower, enemies, projectiles, effects
         c.blit(self.ground, (0, 0))
         for cl in self.clouds:
             cl["spr"].set_alpha(cl["alpha"])
@@ -1409,12 +1513,14 @@ class Game:
         else:
             screen.blit(c, (ox, oy))
 
+        # screen edge darkening, plus a pulsing red warning when the tower is low
         screen.blit(self.vignette, (0, 0))
         if self.state == "play" and self.tower_hp < TOWER_MAX_HP * 0.3:
             pulse = 0.55 + 0.45 * math.sin(self.t_real * 6)
             self.red_vignette.set_alpha(int(255 * pulse * (1 - self.tower_hp / (TOWER_MAX_HP * 0.3)) * 0.8 + 40))
             screen.blit(self.red_vignette, (0, 0))
 
+        # screen overlays for the current game state
         if self.state == "menu":
             self.draw_menu(screen)
         elif self.state in ("play", "pause"):
@@ -1430,6 +1536,7 @@ class Game:
             self.draw_over(screen)
 
     def draw_tower(self, c):
+        """Draw the tower (cracks, window lights, flag, cannon) or its falling rubble."""
         w, h = self.tower_sprite.get_size()
         left, top = ORIGIN_X - w // 2, GROUND_Y - h
         if not self.tower_alive:
@@ -1474,6 +1581,7 @@ class Game:
         self.draw_cannon(c)
 
     def draw_cannon(self, c):
+        """Draw the cannon barrel rotated to θ, with recoil and the reload ring."""
         px, py = to_screen(*PIVOT)
         pygame.draw.polygon(c, (96, 64, 38), [(px - 17, py + 16), (px + 17, py + 16), (px + 9, py - 2), (px - 9, py - 2)])
         pygame.draw.polygon(c, (60, 40, 24), [(px - 17, py + 16), (px + 17, py + 16), (px + 9, py - 2), (px - 9, py - 2)], 2)
@@ -1500,9 +1608,11 @@ class Game:
             pygame.draw.arc(c, (255, 220, 120), rect, math.pi / 2, math.pi / 2 + frac * math.tau, 3)
 
     def draw_humanoid(self, c, e, sx, sy, s, pal, weapon):
+        """Draw a soldier / runner / brute with walking, attacking and cheering poses."""
         fl = e.flash > 0
 
         def C(col):
+            """Return white while the enemy flashes from a hit."""
             return (255, 255, 255) if fl else col
 
         if e.state == "cheer":
@@ -1557,10 +1667,12 @@ class Game:
             pygame.draw.rect(c, C((170, 170, 180)), (sx - 15 * s, sy - 34 * s, 7 * s, 22 * s), max(1, int(1.5 * s)), border_radius=int(2 * s))
 
     def draw_enemy(self, c, e):
+        """Draw any enemy type plus its health bar."""
         sx, sy = to_screen(e.x, e.y)
         fl = e.flash > 0
 
         def C(col):
+            """Return white while the enemy flashes from a hit."""
             return (255, 255, 255) if fl else col
 
         if e.kind == "soldier":
@@ -1637,7 +1749,7 @@ class Game:
                 pygame.draw.line(c, C((110, 76, 44)), (wx - math.cos(wheel_rot) * 9, sy - 11 - math.sin(wheel_rot) * 9),
                                  (wx + math.cos(wheel_rot) * 9, sy - 11 + math.sin(wheel_rot) * 9), 2)
         if e.max_hp > 1 and e.state != "cheer":
-            x1, y1, x2, y2 = e.box()
+            x1, _, x2, y2 = e.box()
             bw = max(30, int((x2 - x1) * PPM))
             bx, by = to_screen(e.x, y2)
             by -= 22 if e.kind == "ram" else 12
@@ -1647,6 +1759,7 @@ class Game:
             pygame.draw.rect(c, (230, 60, 50), (bx - bw / 2, by, bw * e.hp / e.max_hp, 4))
 
     def draw_missile(self, c, m):
+        """Draw an enemy stone or bomb."""
         sx, sy = to_screen(m.x, m.y)
         if m.kind == "bomb":
             pygame.draw.circle(c, (30, 30, 36), (int(sx), int(sy)), 6)
@@ -1659,6 +1772,7 @@ class Game:
             pygame.draw.polygon(c, (80, 76, 70), pts, 1)
 
     def draw_shell(self, c, s):
+        """Draw a shell (and its live vx / vy velocity arrows) or a dropped rock."""
         sx, sy = to_screen(s.x, s.y)
         if sy < -6:   # above the screen: show an altitude marker
             pygame.draw.polygon(c, (255, 230, 150), [(sx, 6), (sx - 7, 18), (sx + 7, 18)])
@@ -1678,12 +1792,14 @@ class Game:
             arrow(c, (255, 110, 200), (sx, sy), (sx, sy - vy * k), 2, 7)
 
     def newest_shell(self):
+        """The most recently fired cannon shell still in the air (or None)."""
         for s in reversed(self.shells):
             if s.kind == "shell":
                 return s
         return None
 
     def draw_particles(self, c):
+        """Draw every particle according to its kind."""
         for p in self.particles:
             k = 1 - p.life / p.max_life
             size = p.size + (p.size_end - p.size) * k
@@ -1710,6 +1826,9 @@ class Game:
                 pygame.draw.polygon(c, p.color, pts)
 
     def draw_aim(self, c):
+        """Aiming UI: angle arc θ and the launch velocity vector split into its components
+        v₀x = v₀·cosθ (blue) and v₀y = v₀·sinθ (pink).
+        """
         px, py = to_screen(*PIVOT)
         th = math.radians(self.angle)
         dashed_line(c, (230, 230, 240), (px, py), (px + 75, py), 5, 4)
@@ -1724,7 +1843,8 @@ class Game:
             return
         mx, my = to_screen(*self.muzzle())
         k = 3.0
-        vx, vy = self.v0 * math.cos(th) * k, self.v0 * math.sin(th) * k
+        vx, vy = physics.velocity_components(self.v0, self.angle)
+        vx, vy = vx * k, vy * k
         dashed_line(c, (90, 220, 255), (mx + vx, my), (mx + vx, my - vy), 4, 4)
         dashed_line(c, (255, 110, 200), (mx, my - vy), (mx + vx, my - vy), 4, 4)
         arrow(c, (90, 220, 255), (mx, my), (mx + vx, my), 2, 8)
@@ -1735,6 +1855,9 @@ class Game:
         draw_text(c, f"v₀={self.v0:.1f} m/s", F_MONO_B, (255, 250, 230), (mx + vx + 6, my - vy - 6), "bottomleft")
 
     def draw_preview(self, c):
+        """Dotted predicted trajectory, plotted with physics.position.
+        Assist FULL shows the whole path plus H and R, PARTIAL the first 30%, OFF nothing.
+        """
         if self.assist == 2:
             return
         mx, my, vx, vy, T, H, R = self.predict()
@@ -1743,7 +1866,7 @@ class Game:
         n = max(1, int(limit / step))
         for i in range(1, n + 1):
             t = i * step
-            sx, sy = to_screen(mx + vx * t, my + vy * t - 0.5 * G * t * t)
+            sx, sy = to_screen(*physics.position(mx, my, vx, vy, t))
             if sx > WIDTH + 10:
                 break
             fade = 1.0 if self.assist == 0 else 1 - i / (n + 1)
@@ -1751,8 +1874,8 @@ class Game:
             c.blit(DOT, (sx - 3, sy - 3))
         if self.assist == 0:
             if vy > 0:
-                ta = vy / G
-                ax, ay = to_screen(mx + vx * ta, H)
+                ta = physics.time_to_apex(vy)
+                ax, ay = to_screen(physics.position(mx, my, vx, vy, ta)[0], H)
                 pygame.draw.polygon(c, (255, 230, 150), [(ax, ay - 6), (ax + 5, ay), (ax, ay + 6), (ax - 5, ay)])
                 draw_text(c, f"H={H:.1f} m", F_SMALL, (255, 230, 150), (ax, ay - 9), "midbottom")
             lx, ly = to_screen(R, 0)
@@ -1762,6 +1885,7 @@ class Game:
                 draw_text(c, f"R={R:.1f} m", F_SMALL, (255, 180, 150), (lx, ly - 12), "midbottom")
 
     def draw_last_shot(self, c):
+        """Faint path of the previous shot with its measured max height H and range R."""
         ls = self.last_shot
         if not ls or self.state not in ("play", "pause"):
             return
@@ -1779,6 +1903,7 @@ class Game:
             draw_text(c, f"R = {ls['land'][0]:.1f} m", F_SMALL, (255, 226, 160), (lx, ly + 4), "midtop", alpha=200)
 
     def draw_rangefinder(self, c):
+        """Show the distance d to the nearest enemy (and any enemy under the mouse)."""
         ground = [e for e in self.enemies if e.kind != "bomber" and e.x < FIELD_END]
         shown = []
         if ground:
@@ -1788,7 +1913,7 @@ class Game:
             if dist_to_box(mx, my, e.box()) < 0.6 and e not in shown:
                 shown.append(e)
         for e in shown:
-            x1, y1, x2, y2 = e.box()
+            _, _, _, y2 = e.box()
             sx, sy = to_screen(e.x, y2)
             label = f"d={e.x:.1f} m" + (f"  alt={e.y:.1f} m" if e.kind == "bomber" else "")
             pygame.draw.polygon(c, (140, 255, 170), [(sx, sy - 4), (sx - 5, sy - 11), (sx + 5, sy - 11)])
@@ -1796,6 +1921,7 @@ class Game:
 
     # ---------------------------------------------------------------- HUD ---
     def draw_hud(self, s):
+        """Heads-up display: physics panel, tower HP, score, wall-drop cooldown and controls."""
         if self.show_panel:
             self.draw_physics_panel(s)
 
@@ -1839,9 +1965,10 @@ class Game:
         draw_text(s, help_txt, F_SMALL, (225, 215, 200), (WIDTH / 2, HEIGHT - 8), "midbottom", alpha=200)
 
     def draw_physics_panel(self, s):
+        """Live physics readout: θ, v₀, components, T, H, R and the shell currently in flight."""
         x0, y0 = 14, 12
         s.blit(panel(372, 272), (x0, y0))
-        mx, my, vx, vy, T, H, R = self.predict()
+        _, my, vx, vy, T, H, R = self.predict()
         x, y = x0 + 14, y0 + 10
         lh = 19
         draw_text(s, "PROJECTILE MOTION", F_MONO_B, (255, 214, 110), (x, y), shadow=False)
@@ -1897,6 +2024,7 @@ class Game:
             draw_text(s, "y = h₀ + v₀y·t − ½·g·t²", F_MONO, (200, 200, 220), (x, y), shadow=False)
 
     def draw_banner(self, s, b):
+        """Animated wave banner that pops in and fades out."""
         t = b.t
         alpha = 255 * min(1.0, t / 0.15, (b.duration - t) / 0.4)
         pop = 1 + max(0.0, 0.5 - t * 2.5)
@@ -1915,44 +2043,35 @@ class Game:
         draw_text(s, b.subtitle, F_UI, (255, 255, 255), (WIDTH / 2, 250), "center", alpha=alpha)
 
     def draw_menu(self, s):
+        """Title screen: game name, physics summary, mission and start prompt."""
         dim = pygame.Surface((WIDTH, HEIGHT), pygame.SRCALPHA)
         dim.fill((8, 10, 24, 90))
         s.blit(dim, (0, 0))
         bob = math.sin(self.t_real * 1.6) * 4
         add_glow(s, WIDTH / 2, 130, 320, (120, 70, 30), 0.9)
         draw_text(s, "PROJECTILE SIEGE", F_TITLE, (255, 214, 110), (WIDTH / 2, 120 + bob), "center")
-        draw_text(s, "a Physics 101 projectile-motion defense game", F_UI, (235, 225, 240), (WIDTH / 2, 190), "center")
+        draw_text(s, "a projectile-motion defense game", F_UI, (235, 225, 240), (WIDTH / 2, 190), "center")
 
-        w, h = 640, 262
-        px, py = WIDTH / 2 - w / 2, 232
+        w, h = 520, 150
+        px, py = WIDTH / 2 - w / 2, 240
         s.blit(panel(w, h, 190), (px, py))
         x, y = px + 26, py + 18
-        draw_text(s, "THE PHYSICS", F_MONO_B, (255, 214, 110), (x, y), shadow=False)
-        lines = [
-            "v₀x = v₀·cosθ          (constant - no air drag)",
-            "v₀y = v₀·sinθ          vy = v₀y − g·t",
-            "x = x₀ + v₀x·t          y = h₀ + v₀y·t − ½·g·t²",
-        ]
-        y += 24
-        for ln in lines:
-            draw_text(s, ln, F_MONO, (215, 215, 235), (x, y), shadow=False)
-            y += 20
-        y += 12
-        draw_text(s, "THE MISSION", F_MONO_B, (255, 214, 110), (x, y), shadow=False)
-        y += 24
-        for ln in ["Enemies march on your tower. If they destroy it, the game is over.",
-                   "Set the launch angle θ and launch speed v₀, then fire.",
-                   "Shoot stones and bombs out of the air. Drop rocks on anyone at the wall.",
-                   f"Trajectory assist [T]: {ASSIST_NAMES[self.assist]}  (score x{ASSIST_MULT[self.assist]})"
-                   "  - turn it OFF and do the math!"]:
+        draw_text(s, "HOW TO PLAY", F_MONO_B, (255, 214, 110), (x, y), shadow=False)
+        y += 28
+        for ln in ["Set angle θ and speed v₀, then fire.",
+                   "Stop the enemies before they reach your tower.",
+                   f"Assist [T]: {ASSIST_NAMES[self.assist]}  (score x{ASSIST_MULT[self.assist]})"]:
             draw_text(s, ln, F_UI_SMALL, (225, 225, 240), (x, y), shadow=False)
-            y += 22
+            y += 24
+        y += 6
+        draw_text(s, "y = h₀ + v₀·sinθ·t − ½·g·t²", F_MONO, (170, 170, 200), (x, y), shadow=False)
         blink = 155 + 100 * math.sin(self.t_real * 4)
-        draw_text(s, "PRESS ENTER OR CLICK TO DEFEND THE TOWER", F_POP, (255, 255, 255), (WIDTH / 2, py + h + 40), "center", alpha=blink)
+        draw_text(s, "PRESS ENTER OR CLICK TO START", F_POP, (255, 255, 255), (WIDTH / 2, py + h + 40), "center", alpha=blink)
         draw_text(s, f"best score {self.highscore:,}", F_UI_SMALL, (200, 200, 220), (WIDTH / 2, py + h + 72), "center")
         draw_text(s, "F11 fullscreen   M mute   ESC quit", F_SMALL, (200, 190, 180), (WIDTH / 2, HEIGHT - 8), "midbottom")
 
     def draw_pause(self, s):
+        """Pause screen."""
         dim = pygame.Surface((WIDTH, HEIGHT), pygame.SRCALPHA)
         dim.fill((6, 8, 20, 160))
         s.blit(dim, (0, 0))
@@ -1960,6 +2079,7 @@ class Game:
         draw_text(s, "P / ESC  resume        Q  quit to menu", F_UI, (230, 230, 240), (WIDTH / 2, HEIGHT / 2 + 10), "center")
 
     def draw_over(self, s):
+        """Game-over screen with end-of-game statistics."""
         a = min(1.0, self.over_t / 0.8)
         dim = pygame.Surface((WIDTH, HEIGHT), pygame.SRCALPHA)
         dim.fill((20, 4, 8, int(170 * a)))
